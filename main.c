@@ -59,7 +59,7 @@ void start(){
         screen_max_fh = 1;
     }
 
-    printf("max w: %f, max h: %f", screen_max_fw, screen_max_fh);
+    //printf("max w: %f, max h: %f", screen_max_fw, screen_max_fh);
     for(int i = 0; i < AMOUNT; i++){
         particles[i].x = (float) rand() / (float) RAND_MAX;
         particles[i].y = (float) rand() / (float) RAND_MAX;
@@ -75,7 +75,6 @@ float distance(const vector* p1, const vector* p2){
 
 void calculate_forces(const vector* particle, vector* pforce){
     vector allforce = {0.0f,0.0f};
-
 
     for(int i = 0; i < AMOUNT; i++){
         vector *a = &particles[i];
@@ -107,14 +106,16 @@ void loop(){
     for(int i = 0; i < AMOUNT; i++){
         calculate_forces(&particles[i], &forces[i]);
     }
-    printf("x: %f, y: %f\n", particles[0].x, particles[0].y);
+    //    printf("x: %f, y: %f\n", particles[0].x, particles[0].y);
     for(int i = 0; i < AMOUNT; i++){
         accelerations[i].x += forces[i].x / pmass; 
         accelerations[i].y += forces[i].y / pmass; 
 
 
         vector *particle = &particles[i];
+
         vector *acceleration = &accelerations[i];
+
         particle->x = particle->x + acceleration->x * mult;
         particle->y = particle->y + acceleration->y * mult;
         SDL_RenderDrawPoint(renderer, (int) (particles[i].x * SCREEN_WIDTH),(int) (particles[i].y * SCREEN_HEIGHT));
@@ -153,6 +154,11 @@ int main(){
     SDL_DestroyWindow(window);
     SDL_Quit();
 }
+
+
+
+
+
 
 
 
