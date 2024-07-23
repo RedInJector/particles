@@ -1,4 +1,5 @@
 
+#include <CL/cl_platform.h>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
@@ -8,6 +9,11 @@
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_render.h>
+
+#include <CL/cl.h>
+
+
+#define CHECK_ERROR(err) if (err != CL_SUCCESS) { fprintf(stderr, "OpenCL error %d at line %d\n", err, __LINE__); exit(EXIT_FAILURE); }
 
 
 #define SCREEN_WIDTH 800
@@ -52,7 +58,6 @@ float distancePow2(const vectorf *p1, const vectorf *p2) {
 float distance(const vectorf *p1, const vectorf *p2) {
     return sqrt(distancePow2(p1, p2));
 }
-
 
 float G = 6.67e-11f;
 float pmass = 100;
@@ -144,6 +149,35 @@ void calculate_tile_forces(){
     }
 }
 
+vectorf calculate_force_gpu(vectorf *p1, vectorf *p2, float mass){
+    vectorf force_vector;
+    float dist = distance(p1, p2);
+
+    if (dist < 0.0000001){
+        force_vector.x = 0;
+        force_vector.y = 0;
+        return force_vector;    
+    }
+    float force = pmass / dist * dist;
+    float dx = p1->x - p2->x;
+    float dy = p1->y - p2->y;
+
+    force_vector.x = force * dx / dist;
+    force_vector.y = force * dy / dist;
+
+    return force_vector;
+}
+
+void calculate_forces_gpu(vectorf **tiles, float **masses, vectorf **out_forces){
+    int i, j;
+    for (int k = 0; k < TILES_V; k++) {
+        for (int n = 0; n < TILES_H; n++) {
+            float *m2 = &tile_masses[k][n];
+            vectorf forcev = calculate_force_gpu(&tiles[k][n], &tiles[i][j], masses[i][j] + masses[k][n]);
+            vector_add(&out_forces[i][j], &forcev);
+        }
+    }
+}
 
 void apply_next_position(vectorf *particle, const vectorf *force) {
     particle->x = particle->x + force->x / pmass * mult;
@@ -245,9 +279,151 @@ int parse_args(int argc, char **argv) {
     return 0;
 }
 
+cl_kernel clkernel;
+cl_program clprogram;
+cl_command_queue clqueue;
+cl_context clcontext;
+cl_device_id cldevice;
+
+cl_mem gpu_tiles;
+cl_mem gpu_masses;
+cl_mem gpu_out_forces;
+
+void clearCL(){
+
+    //release memory before this
+    clReleaseKernel( clkernel );
+    clReleaseProgram( clprogram );
+    clReleaseCommandQueue( clqueue );
+    clReleaseContext( clcontext );
+    clReleaseDevice( cldevice );
+}
+
+int allocate_gpu_memory(){
+    cl_int outResult;
+    cl_mem out = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(vectorf) * TILES_H * TILES_V, NULL,&outResult);
+    if(outResult != CL_SUCCESS)
+        return 1;
+
+    cl_int p1, p2, p3, p4, p5;
+    p1 = clSetKernelArg(clkernel, 0, sizeof(vectorf) * tile_size_H * tile_size_V, &tiles);
+    p2 = clSetKernelArg(clkernel, 1, sizeof(float), tile_masses);
+    p3 = clSetKernelArg(clkernel, 2, sizeof(vectori) * tile_size_H * tile_size_V, &tiles);
+    p4 = clSetKernelArg(clkernel, 3, sizeof(float), &particles);
+    p5 = clSetKernelArg(clkernel, 4, sizeof(float), &particles);
+
+    CHECK_ERROR(p1);
+    CHECK_ERROR(p2);
+    CHECK_ERROR(p3);
+    CHECK_ERROR(p4);
+    CHECK_ERROR(p5);
+
+    return 0;
+}
+
+
+int setupCL(){
+
+    cl_platform_id platforms[64];
+    unsigned int platformcount;
+    cl_int platform_result = clGetPlatformIDs(64, platforms, &platformcount);
+
+    if(platform_result != CL_SUCCESS)
+        return 1;
+
+    for (int i = 0; i < platformcount; i++) {
+        cl_device_id devices[64];
+        unsigned int devicecount;
+        cl_int deviceresult = clGetDeviceIDs(
+                platforms[i], 
+                CL_DEVICE_TYPE_GPU, 
+                64, 
+                devices, 
+                &devicecount
+                );
+
+        if(deviceresult == CL_SUCCESS)
+            continue;
+
+        cldevice = devices[0];
+    }
+
+    cl_int contextresult;
+    clcontext = clCreateContext(NULL, 1, &cldevice, NULL, NULL, &contextresult);
+    if(contextresult != CL_SUCCESS)
+        return 1;
+
+    cl_int command_queue_result;
+    clqueue =  clCreateCommandQueue(clcontext, cldevice, 0, &command_queue_result);
+    if(command_queue_result != CL_SUCCESS)
+        return 1;
+
+    char* program_source = "";
+    size_t lenght = 0;
+    cl_int programResult;
+    cl_program program = clCreateProgramWithSource(clcontext, 1, &program_source, &lenght, 
+            &programResult);
+
+    if(programResult != CL_SUCCESS)
+        return 1;
+
+    cl_int programbuildResult = clBuildProgram(program,
+            1, 
+            &cldevice, 
+            "", 
+            NULL, 
+            NULL);
+    if(programResult != CL_SUCCESS){
+        char log[256];
+        size_t logLength;
+        cl_int programbuildErrorresult = clGetProgramBuildInfo(program, 
+                cldevice, 
+                CL_PROGRAM_BUILD_LOG, 
+                256, 
+                log, 
+                &logLength);
+
+        if(programbuildErrorresult == CL_SUCCESS){
+            printf("%s", log);
+        }
+        return 1;
+    }
+    cl_int kernelResult;
+
+    clkernel = clCreateKernel(program, "calculate_forces_gpu", &kernelResult);
+    if(kernelResult != CL_SUCCESS)
+        return 1;
+
+    return 0;
+}
+
+
+
+
+int try_opencl(){
+    cl_int CL_err = CL_SUCCESS;
+    cl_uint numPlatforms = 0;
+
+    CL_err = clGetPlatformIDs( 0, NULL, &numPlatforms );
+
+    if (CL_err == CL_SUCCESS)
+        printf("%u platform(s) found\n", numPlatforms);
+    else{
+        printf("clGetPlatformIDs(%i)\n", CL_err);
+        return 1;
+    }
+    return 0;
+}
 
 
 int main(int argc, char **argv) {
+    if(try_opencl() != 0)
+        return 1;
+
+    if(setupCL() != 0)
+        return 1;
+
+
     particle_amount = 100;
     draw_grid = false;
 
