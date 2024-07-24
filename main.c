@@ -184,62 +184,6 @@ void apply_next_position(vectorf *particle, const vectorf *force) {
     particle->y = particle->y + force->y / pmass * mult;
 }
 
-void loop() {
-    vectorf forces[particle_amount];
-
-    for (int i = 0; i < TILES_V; i++) {
-        for (int j = 0; j < TILES_H; j++) {
-            tile_masses[i][j] = 0;
-        }
-    }
-    for (int i = 0; i < particle_amount; i++) {
-        vectorf *p = &particles[i];
-        vectori tile = findTile(p); 
-        tile_masses[tile.y][tile.x] += pmass;
-    }
-    calculate_tile_forces();
-    for (int i = 0; i < particle_amount; i++) {
-        vectorf *particle = &particles[i];
-        vectori tile = findTile(particle);
-        accelerations[i].x += tile_forces[tile.y][tile.x].x / pmass;
-        accelerations[i].y += tile_forces[tile.y][tile.x].y / pmass;
-
-
-        vectorf *acceleration = &accelerations[i];
-
-        particle->x = particle->x + acceleration->x * mult;
-        particle->y = particle->y + acceleration->y * mult;
-        if(particle->x > 1){
-            particle->x = 1;
-        }
-        if(particle->x < 0){
-            particle->x = 0;
-        }
-        if(particle->y > 1){
-            particle->y = 1;
-        }
-        if(particle->y < 0){
-            particle->y = 0;
-        }
-        SDL_RenderDrawPoint(renderer, (int)(particles[i].x * SCREEN_WIDTH),
-                (int)(particles[i].y * SCREEN_HEIGHT));
-    }
-    if(draw_grid) 
-        for (int i = 0; i < TILES_V; i++) {
-            for (int j = 0; j < TILES_H; j++) {
-                vectorf *t = &tiles[i][j];
-                vectori vi;
-                vi.x = (int)(t->x * SCREEN_WIDTH);
-                vi.y = (int)(t->y * SCREEN_HEIGHT);
-                SDL_SetRenderDrawColor(renderer, 255, 255, 0, 255);
-                SDL_RenderDrawLine(renderer, vi.x, vi.y,
-                        vi.x + tile_size_H * SCREEN_WIDTH, vi.y);
-                SDL_RenderDrawLine(renderer, vi.x, vi.y, vi.x,
-                        vi.y + tile_size_V * SCREEN_HEIGHT);
-            }
-        }
-
-}
 
 int parse_args(int argc, char **argv) {
     printf("arguments c: %d\n", argc);
@@ -287,9 +231,16 @@ cl_device_id cldevice;
 
 cl_mem gpu_tiles;
 cl_mem gpu_masses;
+cl_mem gpu_col_max;
+cl_mem gpu_row_max;
 cl_mem gpu_out_forces;
 
 void clearCL(){
+    clReleaseMemObject(gpu_tiles);
+    clReleaseMemObject(gpu_masses);
+    clReleaseMemObject(gpu_col_max);
+    clReleaseMemObject(gpu_row_max);
+    clReleaseMemObject(gpu_out_forces);
 
     //release memory before this
     clReleaseKernel( clkernel );
@@ -299,24 +250,123 @@ void clearCL(){
     clReleaseDevice( cldevice );
 }
 
+void runCL(){
+    cl_int e1, e2, e3, e4;
+    e1 = clEnqueueWriteBuffer(clqueue, gpu_tiles, CL_TRUE, 0, sizeof(vectorf) * TILES_H * TILES_V, tiles, 0, NULL, NULL); 
+    e2 = clEnqueueWriteBuffer(clqueue, gpu_tiles, CL_TRUE, 0, sizeof(float) * TILES_H * TILES_V, tile_masses, 0, NULL, NULL); 
+    e3 = clEnqueueWriteBuffer(clqueue, gpu_tiles, CL_TRUE, 0, sizeof(int), tiles, 0, NULL, NULL); 
+    e4 = clEnqueueWriteBuffer(clqueue, gpu_tiles, CL_TRUE, 0, sizeof(int), tiles, 0, NULL, NULL); 
+
+    CHECK_ERROR(e1);
+    CHECK_ERROR(e2);
+    CHECK_ERROR(e3);
+    CHECK_ERROR(e4);
+
+
+    size_t globalWorkSize = TILES_V;
+    size_t localWorkSize = TILES_H;
+
+    cl_int e5 = clEnqueueNDRangeKernel(clqueue, clkernel, 1, 0, &globalWorkSize, &localWorkSize, 0 , NULL, NULL);
+    CHECK_ERROR(e5);
+
+    //TODO: finish this 
+    cl_int e6 = clEnqueueReadBuffer(clqueue, gpu_out_forces, CL_TRUE, 0, sizeof(vectorf) * TILES_H * TILES_V, 
+            &tile_forces, NULL, NULL, NULL);
+    CHECK_ERROR(e6);
+
+    cl_int e7 = clFinish(clqueue);
+    CHECK_ERROR(e7);
+}
+
+void loop() {
+    vectorf forces[particle_amount];
+
+    for (int i = 0; i < TILES_V; i++) {
+        for (int j = 0; j < TILES_H; j++) {
+            tile_masses[i][j] = 0;
+        }
+    }
+    for (int i = 0; i < particle_amount; i++) {
+        vectorf *p = &particles[i];
+        vectori tile = findTile(p); 
+        tile_masses[tile.y][tile.x] += pmass;
+    }
+    //calculate_tile_forces();
+    runCL();
+    for (int i = 0; i < particle_amount; i++) {
+        vectorf *particle = &particles[i];
+        vectori tile = findTile(particle);
+        accelerations[i].x += tile_forces[tile.y][tile.x].x / pmass;
+        accelerations[i].y += tile_forces[tile.y][tile.x].y / pmass;
+
+
+        vectorf *acceleration = &accelerations[i];
+
+        particle->x = particle->x + acceleration->x * mult;
+        particle->y = particle->y + acceleration->y * mult;
+        if(particle->x > 1){
+            particle->x = 1;
+        }
+        if(particle->x < 0){
+            particle->x = 0;
+        }
+        if(particle->y > 1){
+            particle->y = 1;
+        }
+        if(particle->y < 0){
+            particle->y = 0;
+        }
+        SDL_RenderDrawPoint(renderer, (int)(particles[i].x * SCREEN_WIDTH),
+                (int)(particles[i].y * SCREEN_HEIGHT));
+    }
+    if(draw_grid) 
+        for (int i = 0; i < TILES_V; i++) {
+            for (int j = 0; j < TILES_H; j++) {
+                vectorf *t = &tiles[i][j];
+                vectori vi;
+                vi.x = (int)(t->x * SCREEN_WIDTH);
+                vi.y = (int)(t->y * SCREEN_HEIGHT);
+                SDL_SetRenderDrawColor(renderer, 255, 255, 0, 255);
+                SDL_RenderDrawLine(renderer, vi.x, vi.y,
+                        vi.x + tile_size_H * SCREEN_WIDTH, vi.y);
+                SDL_RenderDrawLine(renderer, vi.x, vi.y, vi.x,
+                        vi.y + tile_size_V * SCREEN_HEIGHT);
+            }
+        }
+
+}
+
+
+int allocate_gpu_buffers(){
+    cl_int e1, e2, e3, e4, e5;
+    gpu_tiles = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(vectorf) * TILES_H * TILES_V, NULL, &e1);
+    gpu_masses = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(float) * TILES_H * TILES_V, NULL, &e2);
+    gpu_col_max = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(int), NULL, &e3);
+    gpu_row_max = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(int), NULL, &e4);
+    gpu_out_forces = clCreateBuffer(clcontext, CL_MEM_WRITE_ONLY, sizeof(vectorf) * TILES_H * TILES_V, NULL, &e5);
+
+    CHECK_ERROR(e1);
+    CHECK_ERROR(e2);
+    CHECK_ERROR(e3);
+    CHECK_ERROR(e4);
+    CHECK_ERROR(e5);
+
+    return 0;
+}
+
 int allocate_gpu_memory(){
-    cl_int outResult;
-    cl_mem out = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(vectorf) * TILES_H * TILES_V, NULL,&outResult);
-    if(outResult != CL_SUCCESS)
-        return 1;
+    cl_int e1, e2, e3, e4, e5;
+    e1 = clSetKernelArg(clkernel, 0, sizeof(vectorf) * tile_size_H * tile_size_V, &tiles);
+    e2 = clSetKernelArg(clkernel, 1, sizeof(float), tile_masses);
+    e3 = clSetKernelArg(clkernel, 2, sizeof(vectori) * tile_size_H * tile_size_V, &tiles);
+    e4 = clSetKernelArg(clkernel, 3, sizeof(float), &particles);
+    e5 = clSetKernelArg(clkernel, 4, sizeof(float), &particles);
 
-    cl_int p1, p2, p3, p4, p5;
-    p1 = clSetKernelArg(clkernel, 0, sizeof(vectorf) * tile_size_H * tile_size_V, &tiles);
-    p2 = clSetKernelArg(clkernel, 1, sizeof(float), tile_masses);
-    p3 = clSetKernelArg(clkernel, 2, sizeof(vectori) * tile_size_H * tile_size_V, &tiles);
-    p4 = clSetKernelArg(clkernel, 3, sizeof(float), &particles);
-    p5 = clSetKernelArg(clkernel, 4, sizeof(float), &particles);
-
-    CHECK_ERROR(p1);
-    CHECK_ERROR(p2);
-    CHECK_ERROR(p3);
-    CHECK_ERROR(p4);
-    CHECK_ERROR(p5);
+    CHECK_ERROR(e1);
+    CHECK_ERROR(e2);
+    CHECK_ERROR(e3);
+    CHECK_ERROR(e4);
+    CHECK_ERROR(e5);
 
     return 0;
 }
@@ -358,11 +408,23 @@ int setupCL(){
     if(command_queue_result != CL_SUCCESS)
         return 1;
 
-    char* program_source = "";
-    size_t lenght = 0;
+    FILE *fptr;
+    fptr = fopen("calculate_force_kernel.cl", "r");
+    CHECK_ERROR(fptr != NULL);
+    
+    fseek(fptr, 0, SEEK_END);
+    size_t program_size = ftell(fptr);
+    fseek(fptr, 0, SEEK_SET);
+    char *program_source = malloc(program_size + 1); 
+    fread(program_source, program_size, 1, fptr);
+    fclose(fptr);
+    
+
     cl_int programResult;
-    cl_program program = clCreateProgramWithSource(clcontext, 1, &program_source, &lenght, 
+    cl_program program = clCreateProgramWithSource(clcontext, 1, &program_source, &program_size, 
             &programResult);
+
+    free(program_source);
 
     if(programResult != CL_SUCCESS)
         return 1;
@@ -390,7 +452,7 @@ int setupCL(){
     }
     cl_int kernelResult;
 
-    clkernel = clCreateKernel(program, "calculate_forces_gpu", &kernelResult);
+    clkernel = clCreateKernel(program, "calculate_force", &kernelResult);
     if(kernelResult != CL_SUCCESS)
         return 1;
 
