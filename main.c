@@ -13,14 +13,15 @@
 #include <CL/cl.h>
 
 
-#define CHECK_ERROR(err) if (err != CL_SUCCESS) { fprintf(stderr, "OpenCL error %d at line %d\n", err, __LINE__); exit(EXIT_FAILURE); }
+#define ASSERT_NOERROR(err) if (err != CL_SUCCESS) { fprintf(stderr, "OpenCL error %d at line %d\n", err, __LINE__); exit(EXIT_FAILURE); }
+#define PRINT_ERROR(err) if (err != CL_SUCCESS) { fprintf(stderr, "OpenCL error %d at line %d\n", err, __LINE__); }
 
 
 #define SCREEN_WIDTH 800
 #define SCREEN_HEIGHT 600
 
-#define TILES_V 15
-#define TILES_H 15
+#define TILES_V 5
+#define TILES_H 5
 
 struct vector_f_s {
     float x;
@@ -66,7 +67,7 @@ bool draw_grid = false;
 float tile_size_H = 1.0 / TILES_H;
 float tile_size_V = 1.0 / TILES_V;
 
-int particle_amount = 100;
+int particle_amount = 10;
 float mult = 0.00001;
 
 vectorf *particles;
@@ -109,79 +110,6 @@ void start() {
         particles[i].x = (float)rand() / (float)RAND_MAX;
         particles[i].y = (float)rand() / (float)RAND_MAX;
     }
-}
-
-vectorf calculate_force(vectorf *p1, vectorf *p2, float mass){
-    vectorf force_vector;
-    float dist = distance(p1, p2);
-
-    if (dist < 0.0000001){
-        force_vector.x = 0;
-        force_vector.y = 0;
-        return force_vector;    
-    }
-    float force = pmass / dist * dist;
-    float dx = p1->x - p2->x;
-    float dy = p1->y - p2->y;
-
-    force_vector.x = force * dx / dist;
-    force_vector.y = force * dy / dist;
-
-    return force_vector;
-}
-
-void calculate_tile_forces(){
-    for (int i = 0; i < TILES_V; i++) {
-        for (int j = 0; j < TILES_H; j++) {
-            vectorf allforce = {0.0f, 0.0f};
-            vectorf *t = &tiles[i][j];
-            float *m = &tile_masses[i][j];
-            for (int k = 0; k < TILES_V; k++) {
-                for (int n = 0; n < TILES_H; n++) {
-                    float *m2 = &tile_masses[k][n];
-                    vectorf forcev = calculate_force(&tiles[k][n], t, *m + *m2);
-                    vector_add(&allforce, &forcev);
-                }
-            }
-            tile_forces[i][j].x = allforce.x;
-            tile_forces[i][j].y = allforce.y;
-        }
-    }
-}
-
-vectorf calculate_force_gpu(vectorf *p1, vectorf *p2, float mass){
-    vectorf force_vector;
-    float dist = distance(p1, p2);
-
-    if (dist < 0.0000001){
-        force_vector.x = 0;
-        force_vector.y = 0;
-        return force_vector;    
-    }
-    float force = pmass / dist * dist;
-    float dx = p1->x - p2->x;
-    float dy = p1->y - p2->y;
-
-    force_vector.x = force * dx / dist;
-    force_vector.y = force * dy / dist;
-
-    return force_vector;
-}
-
-void calculate_forces_gpu(vectorf **tiles, float **masses, vectorf **out_forces){
-    int i, j;
-    for (int k = 0; k < TILES_V; k++) {
-        for (int n = 0; n < TILES_H; n++) {
-            float *m2 = &tile_masses[k][n];
-            vectorf forcev = calculate_force_gpu(&tiles[k][n], &tiles[i][j], masses[i][j] + masses[k][n]);
-            vector_add(&out_forces[i][j], &forcev);
-        }
-    }
-}
-
-void apply_next_position(vectorf *particle, const vectorf *force) {
-    particle->x = particle->x + force->x / pmass * mult;
-    particle->y = particle->y + force->y / pmass * mult;
 }
 
 
@@ -251,31 +179,34 @@ void clearCL(){
 }
 
 void runCL(){
+    printf("rendering opencl frame\n");
     cl_int e1, e2, e3, e4;
+    int tile_h, tile_v;
+    tile_h = TILES_H;
+    tile_v = TILES_V;
     e1 = clEnqueueWriteBuffer(clqueue, gpu_tiles, CL_TRUE, 0, sizeof(vectorf) * TILES_H * TILES_V, tiles, 0, NULL, NULL); 
-    e2 = clEnqueueWriteBuffer(clqueue, gpu_tiles, CL_TRUE, 0, sizeof(float) * TILES_H * TILES_V, tile_masses, 0, NULL, NULL); 
-    e3 = clEnqueueWriteBuffer(clqueue, gpu_tiles, CL_TRUE, 0, sizeof(int), tiles, 0, NULL, NULL); 
-    e4 = clEnqueueWriteBuffer(clqueue, gpu_tiles, CL_TRUE, 0, sizeof(int), tiles, 0, NULL, NULL); 
-
-    CHECK_ERROR(e1);
-    CHECK_ERROR(e2);
-    CHECK_ERROR(e3);
-    CHECK_ERROR(e4);
-
-
-    size_t globalWorkSize = TILES_V;
-    size_t localWorkSize = TILES_H;
-
-    cl_int e5 = clEnqueueNDRangeKernel(clqueue, clkernel, 1, 0, &globalWorkSize, &localWorkSize, 0 , NULL, NULL);
-    CHECK_ERROR(e5);
-
-    //TODO: finish this 
+    e2 = clEnqueueWriteBuffer(clqueue, gpu_masses, CL_TRUE, 0, sizeof(float) * TILES_H * TILES_V, tile_masses, 0, NULL, NULL); 
+    e3 = clEnqueueWriteBuffer(clqueue, gpu_col_max, CL_TRUE, 0, sizeof(int), &tile_v, 0, NULL, NULL); 
+    e4 = clEnqueueWriteBuffer(clqueue, gpu_row_max, CL_TRUE, 0, sizeof(int), &tile_h, 0, NULL, NULL); 
     cl_int e6 = clEnqueueReadBuffer(clqueue, gpu_out_forces, CL_TRUE, 0, sizeof(vectorf) * TILES_H * TILES_V, 
-            &tile_forces, NULL, NULL, NULL);
-    CHECK_ERROR(e6);
+            tile_forces, 0, NULL, NULL);
+
+    ASSERT_NOERROR(e1);
+    ASSERT_NOERROR(e2);
+    ASSERT_NOERROR(e3);
+    ASSERT_NOERROR(e4);
+    ASSERT_NOERROR(e6);
+
+
+    size_t globalWorkSize[2] = {TILES_V, TILES_H};
+
+    cl_int e5 = clEnqueueNDRangeKernel(clqueue, clkernel, 2, 0, globalWorkSize, NULL, 0 , NULL, NULL);
+    ASSERT_NOERROR(e5);
+
 
     cl_int e7 = clFinish(clqueue);
-    CHECK_ERROR(e7);
+
+    ASSERT_NOERROR(e7);
 }
 
 void loop() {
@@ -292,7 +223,9 @@ void loop() {
         tile_masses[tile.y][tile.x] += pmass;
     }
     //calculate_tile_forces();
+    printf("here1\n");
     runCL();
+    printf("here2\n");
     for (int i = 0; i < particle_amount; i++) {
         vectorf *particle = &particles[i];
         vectori tile = findTile(particle);
@@ -345,28 +278,28 @@ int allocate_gpu_buffers(){
     gpu_row_max = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(int), NULL, &e4);
     gpu_out_forces = clCreateBuffer(clcontext, CL_MEM_WRITE_ONLY, sizeof(vectorf) * TILES_H * TILES_V, NULL, &e5);
 
-    CHECK_ERROR(e1);
-    CHECK_ERROR(e2);
-    CHECK_ERROR(e3);
-    CHECK_ERROR(e4);
-    CHECK_ERROR(e5);
+    ASSERT_NOERROR(e1);
+    ASSERT_NOERROR(e2);
+    ASSERT_NOERROR(e3);
+    ASSERT_NOERROR(e4);
+    ASSERT_NOERROR(e5);
 
     return 0;
 }
 
-int allocate_gpu_memory(){
+int set_gpu_kernel_args(){
     cl_int e1, e2, e3, e4, e5;
-    e1 = clSetKernelArg(clkernel, 0, sizeof(vectorf) * tile_size_H * tile_size_V, &tiles);
-    e2 = clSetKernelArg(clkernel, 1, sizeof(float), tile_masses);
-    e3 = clSetKernelArg(clkernel, 2, sizeof(vectori) * tile_size_H * tile_size_V, &tiles);
-    e4 = clSetKernelArg(clkernel, 3, sizeof(float), &particles);
-    e5 = clSetKernelArg(clkernel, 4, sizeof(float), &particles);
+    e1 = clSetKernelArg(clkernel, 0, sizeof(cl_mem), &gpu_tiles);
+    e2 = clSetKernelArg(clkernel, 1, sizeof(cl_mem), &gpu_masses);
+    e3 = clSetKernelArg(clkernel, 2, sizeof(cl_mem), &gpu_col_max);
+    e4 = clSetKernelArg(clkernel, 3, sizeof(cl_mem), &gpu_row_max);
+    e5 = clSetKernelArg(clkernel, 4, sizeof(cl_mem), &gpu_out_forces);
 
-    CHECK_ERROR(e1);
-    CHECK_ERROR(e2);
-    CHECK_ERROR(e3);
-    CHECK_ERROR(e4);
-    CHECK_ERROR(e5);
+    ASSERT_NOERROR(e1);
+    ASSERT_NOERROR(e2);
+    ASSERT_NOERROR(e3);
+    ASSERT_NOERROR(e4);
+    ASSERT_NOERROR(e5);
 
     return 0;
 }
@@ -376,10 +309,8 @@ int setupCL(){
 
     cl_platform_id platforms[64];
     unsigned int platformcount;
-    cl_int platform_result = clGetPlatformIDs(64, platforms, &platformcount);
-
-    if(platform_result != CL_SUCCESS)
-        return 1;
+    cl_int e1 = clGetPlatformIDs(64, platforms, &platformcount);
+    ASSERT_NOERROR(e1);
 
     for (int i = 0; i < platformcount; i++) {
         cl_device_id devices[64];
@@ -392,69 +323,73 @@ int setupCL(){
                 &devicecount
                 );
 
-        if(deviceresult == CL_SUCCESS)
+        if(deviceresult != CL_SUCCESS)
             continue;
+
+        char name[128];
+        int e7 = clGetDeviceInfo(devices[0], CL_DEVICE_NAME, sizeof(char) * 128, name, NULL);
+        ASSERT_NOERROR(e7);
+        printf("%s\n", name);
 
         cldevice = devices[0];
     }
 
-    cl_int contextresult;
-    clcontext = clCreateContext(NULL, 1, &cldevice, NULL, NULL, &contextresult);
-    if(contextresult != CL_SUCCESS)
-        return 1;
+    cl_int e6;
+    clcontext = clCreateContext(NULL, 1, &cldevice, NULL, NULL, &e6);
+    ASSERT_NOERROR(e6);
 
-    cl_int command_queue_result;
-    clqueue =  clCreateCommandQueue(clcontext, cldevice, 0, &command_queue_result);
-    if(command_queue_result != CL_SUCCESS)
-        return 1;
+    cl_int e2;
+    clqueue = clCreateCommandQueueWithProperties(clcontext, cldevice, NULL, &e2);
+    ASSERT_NOERROR(e2);
 
     FILE *fptr;
     fptr = fopen("calculate_force_kernel.cl", "r");
-    CHECK_ERROR(fptr != NULL);
-    
+    ASSERT_NOERROR(fptr == NULL);
+
     fseek(fptr, 0, SEEK_END);
     size_t program_size = ftell(fptr);
     fseek(fptr, 0, SEEK_SET);
     char *program_source = malloc(program_size + 1); 
     fread(program_source, program_size, 1, fptr);
     fclose(fptr);
-    
 
-    cl_int programResult;
-    cl_program program = clCreateProgramWithSource(clcontext, 1, &program_source, &program_size, 
-            &programResult);
+    const char *const_program_source = program_source;    
 
-    free(program_source);
+    cl_int e3;
+    cl_program program = clCreateProgramWithSource(clcontext, 1, &const_program_source, &program_size, 
+            &e3);
+    ASSERT_NOERROR(e3);
+    //free(program_source);
 
-    if(programResult != CL_SUCCESS)
-        return 1;
-
-    cl_int programbuildResult = clBuildProgram(program,
+    cl_int e4 = clBuildProgram(program,
             1, 
             &cldevice, 
             "", 
             NULL, 
             NULL);
-    if(programResult != CL_SUCCESS){
-        char log[256];
+    PRINT_ERROR(e4);
+    if(e4 != CL_SUCCESS){
+        char log[1024];
         size_t logLength;
         cl_int programbuildErrorresult = clGetProgramBuildInfo(program, 
                 cldevice, 
                 CL_PROGRAM_BUILD_LOG, 
-                256, 
+                1024, 
                 log, 
                 &logLength);
+
+        ASSERT_NOERROR(programbuildErrorresult);
 
         if(programbuildErrorresult == CL_SUCCESS){
             printf("%s", log);
         }
         return 1;
     }
-    cl_int kernelResult;
 
-    clkernel = clCreateKernel(program, "calculate_force", &kernelResult);
-    if(kernelResult != CL_SUCCESS)
-        return 1;
+    cl_int e5;
+    clkernel = clCreateKernel(program, "calculate_force", &e5);
+    ASSERT_NOERROR(e5);
+
 
     return 0;
 }
@@ -485,6 +420,8 @@ int main(int argc, char **argv) {
     if(setupCL() != 0)
         return 1;
 
+    allocate_gpu_buffers();
+    set_gpu_kernel_args();
 
     particle_amount = 100;
     draw_grid = false;
