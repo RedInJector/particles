@@ -10,11 +10,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_render.h>
 
-#include <CL/cl.h>
-
-
-#define ASSERT_NOERROR(err) if (err != CL_SUCCESS) { fprintf(stderr, "OpenCL error %d at line %d\n", err, __LINE__); exit(EXIT_FAILURE); }
-#define PRINT_ERROR(err) if (err != CL_SUCCESS) { fprintf(stderr, "OpenCL error %d at line %d\n", err, __LINE__); }
+#include "opencl_physics.c"
 
 
 #define SCREEN_WIDTH 800
@@ -72,10 +68,10 @@ float mult = 0.00001;
 
 vectorf *particles;
 vectorf *accelerations;
-float tile_masses[TILES_V][TILES_H];
+float tile_masses[TILES_V * TILES_H];
 
-vectorf tiles[TILES_V][TILES_H];
-vectorf tile_forces[TILES_V][TILES_H];
+vectorf tiles[TILES_V * TILES_H];
+vectorf tile_forces[TILES_V * TILES_H];
 
 float screen_max_fw;
 float screen_max_fh;
@@ -91,6 +87,16 @@ vectori findTile(vectorf *particle){
     return coordinates;
 }
 
+vectorf *getTile(int row, int col){
+    return &tiles[row * TILES_H + col];
+}
+float *getMass(int row, int col){
+    return &tile_masses[row * TILES_H + col];
+}
+vectorf *getTileForce(int row, int col){
+    return &tile_forces[row * TILES_H + col];
+}
+
 void start() {
     if (SCREEN_WIDTH > SCREEN_HEIGHT) {
         screen_max_fw = 1;
@@ -102,8 +108,8 @@ void start() {
 
     for (int i = 0; i < TILES_V; i++) {
         for (int j = 0; j < TILES_H; j++) {
-            tiles[i][j].x = tile_size_H * j;
-            tiles[i][j].y = tile_size_V * i;
+            getTile(i, j)->x = tile_size_H * j;
+            getTile(i, j)->y = tile_size_H * i;
         }
     }
     for (int i = 0; i < particle_amount; i++) {
@@ -151,87 +157,29 @@ int parse_args(int argc, char **argv) {
     return 0;
 }
 
-cl_kernel clkernel;
-cl_program clprogram;
-cl_command_queue clqueue;
-cl_context clcontext;
-cl_device_id cldevice;
-
-cl_mem gpu_tiles;
-cl_mem gpu_masses;
-cl_mem gpu_col_max;
-cl_mem gpu_row_max;
-cl_mem gpu_out_forces;
-
-void clearCL(){
-    clReleaseMemObject(gpu_tiles);
-    clReleaseMemObject(gpu_masses);
-    clReleaseMemObject(gpu_col_max);
-    clReleaseMemObject(gpu_row_max);
-    clReleaseMemObject(gpu_out_forces);
-
-    //release memory before this
-    clReleaseKernel( clkernel );
-    clReleaseProgram( clprogram );
-    clReleaseCommandQueue( clqueue );
-    clReleaseContext( clcontext );
-    clReleaseDevice( cldevice );
-}
-
-void runCL(){
-    printf("rendering opencl frame\n");
-    cl_int e1, e2, e3, e4;
-    int tile_h, tile_v;
-    tile_h = TILES_H;
-    tile_v = TILES_V;
-    e1 = clEnqueueWriteBuffer(clqueue, gpu_tiles, CL_TRUE, 0, sizeof(vectorf) * TILES_H * TILES_V, tiles, 0, NULL, NULL); 
-    e2 = clEnqueueWriteBuffer(clqueue, gpu_masses, CL_TRUE, 0, sizeof(float) * TILES_H * TILES_V, tile_masses, 0, NULL, NULL); 
-    e3 = clEnqueueWriteBuffer(clqueue, gpu_col_max, CL_TRUE, 0, sizeof(int), &tile_v, 0, NULL, NULL); 
-    e4 = clEnqueueWriteBuffer(clqueue, gpu_row_max, CL_TRUE, 0, sizeof(int), &tile_h, 0, NULL, NULL); 
-    cl_int e6 = clEnqueueReadBuffer(clqueue, gpu_out_forces, CL_TRUE, 0, sizeof(vectorf) * TILES_H * TILES_V, 
-            tile_forces, 0, NULL, NULL);
-
-    ASSERT_NOERROR(e1);
-    ASSERT_NOERROR(e2);
-    ASSERT_NOERROR(e3);
-    ASSERT_NOERROR(e4);
-    ASSERT_NOERROR(e6);
-
-
-    size_t globalWorkSize[2] = {TILES_V, TILES_H};
-
-    cl_int e5 = clEnqueueNDRangeKernel(clqueue, clkernel, 2, 0, globalWorkSize, NULL, 0 , NULL, NULL);
-    ASSERT_NOERROR(e5);
-
-
-    cl_int e7 = clFinish(clqueue);
-
-    ASSERT_NOERROR(e7);
-}
 
 void loop() {
     vectorf forces[particle_amount];
 
     for (int i = 0; i < TILES_V; i++) {
         for (int j = 0; j < TILES_H; j++) {
-            tile_masses[i][j] = 0;
+            *getMass(i,j) = 0;
         }
     }
     for (int i = 0; i < particle_amount; i++) {
         vectorf *p = &particles[i];
         vectori tile = findTile(p); 
-        tile_masses[tile.y][tile.x] += pmass;
+        *getMass(tile.y, tile.x) += pmass;
     }
     //calculate_tile_forces();
     printf("here1\n");
-    runCL();
+    PX_calculate_physics((cl_float2*)tiles, tile_masses, (cl_float*)tile_forces, TILES_H, TILES_V);    
     printf("here2\n");
     for (int i = 0; i < particle_amount; i++) {
         vectorf *particle = &particles[i];
         vectori tile = findTile(particle);
-        accelerations[i].x += tile_forces[tile.y][tile.x].x / pmass;
-        accelerations[i].y += tile_forces[tile.y][tile.x].y / pmass;
-
+        accelerations[i].x += getTileForce(tile.y, tile.x)->x / pmass;
+        accelerations[i].y += getTileForce(tile.y, tile.x)->y / pmass;
 
         vectorf *acceleration = &accelerations[i];
 
@@ -255,7 +203,7 @@ void loop() {
     if(draw_grid) 
         for (int i = 0; i < TILES_V; i++) {
             for (int j = 0; j < TILES_H; j++) {
-                vectorf *t = &tiles[i][j];
+                vectorf *t = getTile(i, j);
                 vectori vi;
                 vi.x = (int)(t->x * SCREEN_WIDTH);
                 vi.y = (int)(t->y * SCREEN_HEIGHT);
@@ -270,158 +218,14 @@ void loop() {
 }
 
 
-int allocate_gpu_buffers(){
-    cl_int e1, e2, e3, e4, e5;
-    gpu_tiles = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(vectorf) * TILES_H * TILES_V, NULL, &e1);
-    gpu_masses = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(float) * TILES_H * TILES_V, NULL, &e2);
-    gpu_col_max = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(int), NULL, &e3);
-    gpu_row_max = clCreateBuffer(clcontext, CL_MEM_READ_ONLY, sizeof(int), NULL, &e4);
-    gpu_out_forces = clCreateBuffer(clcontext, CL_MEM_WRITE_ONLY, sizeof(vectorf) * TILES_H * TILES_V, NULL, &e5);
-
-    ASSERT_NOERROR(e1);
-    ASSERT_NOERROR(e2);
-    ASSERT_NOERROR(e3);
-    ASSERT_NOERROR(e4);
-    ASSERT_NOERROR(e5);
-
-    return 0;
-}
-
-int set_gpu_kernel_args(){
-    cl_int e1, e2, e3, e4, e5;
-    e1 = clSetKernelArg(clkernel, 0, sizeof(cl_mem), &gpu_tiles);
-    e2 = clSetKernelArg(clkernel, 1, sizeof(cl_mem), &gpu_masses);
-    e3 = clSetKernelArg(clkernel, 2, sizeof(cl_mem), &gpu_col_max);
-    e4 = clSetKernelArg(clkernel, 3, sizeof(cl_mem), &gpu_row_max);
-    e5 = clSetKernelArg(clkernel, 4, sizeof(cl_mem), &gpu_out_forces);
-
-    ASSERT_NOERROR(e1);
-    ASSERT_NOERROR(e2);
-    ASSERT_NOERROR(e3);
-    ASSERT_NOERROR(e4);
-    ASSERT_NOERROR(e5);
-
-    return 0;
-}
-
-
-int setupCL(){
-
-    cl_platform_id platforms[64];
-    unsigned int platformcount;
-    cl_int e1 = clGetPlatformIDs(64, platforms, &platformcount);
-    ASSERT_NOERROR(e1);
-
-    for (int i = 0; i < platformcount; i++) {
-        cl_device_id devices[64];
-        unsigned int devicecount;
-        cl_int deviceresult = clGetDeviceIDs(
-                platforms[i], 
-                CL_DEVICE_TYPE_GPU, 
-                64, 
-                devices, 
-                &devicecount
-                );
-
-        if(deviceresult != CL_SUCCESS)
-            continue;
-
-        char name[128];
-        int e7 = clGetDeviceInfo(devices[0], CL_DEVICE_NAME, sizeof(char) * 128, name, NULL);
-        ASSERT_NOERROR(e7);
-        printf("%s\n", name);
-
-        cldevice = devices[0];
-    }
-
-    cl_int e6;
-    clcontext = clCreateContext(NULL, 1, &cldevice, NULL, NULL, &e6);
-    ASSERT_NOERROR(e6);
-
-    cl_int e2;
-    clqueue = clCreateCommandQueueWithProperties(clcontext, cldevice, NULL, &e2);
-    ASSERT_NOERROR(e2);
-
-    FILE *fptr;
-    fptr = fopen("calculate_force_kernel.cl", "r");
-    ASSERT_NOERROR(fptr == NULL);
-
-    fseek(fptr, 0, SEEK_END);
-    size_t program_size = ftell(fptr);
-    fseek(fptr, 0, SEEK_SET);
-    char *program_source = malloc(program_size + 1); 
-    fread(program_source, program_size, 1, fptr);
-    fclose(fptr);
-
-    const char *const_program_source = program_source;    
-
-    cl_int e3;
-    cl_program program = clCreateProgramWithSource(clcontext, 1, &const_program_source, &program_size, 
-            &e3);
-    ASSERT_NOERROR(e3);
-    //free(program_source);
-
-    cl_int e4 = clBuildProgram(program,
-            1, 
-            &cldevice, 
-            "", 
-            NULL, 
-            NULL);
-    PRINT_ERROR(e4);
-    if(e4 != CL_SUCCESS){
-        char log[1024];
-        size_t logLength;
-        cl_int programbuildErrorresult = clGetProgramBuildInfo(program, 
-                cldevice, 
-                CL_PROGRAM_BUILD_LOG, 
-                1024, 
-                log, 
-                &logLength);
-
-        ASSERT_NOERROR(programbuildErrorresult);
-
-        if(programbuildErrorresult == CL_SUCCESS){
-            printf("%s", log);
-        }
-        return 1;
-    }
-
-    cl_int e5;
-    clkernel = clCreateKernel(program, "calculate_force", &e5);
-    ASSERT_NOERROR(e5);
-
-
-    return 0;
-}
-
-
-
-
-int try_opencl(){
-    cl_int CL_err = CL_SUCCESS;
-    cl_uint numPlatforms = 0;
-
-    CL_err = clGetPlatformIDs( 0, NULL, &numPlatforms );
-
-    if (CL_err == CL_SUCCESS)
-        printf("%u platform(s) found\n", numPlatforms);
-    else{
-        printf("clGetPlatformIDs(%i)\n", CL_err);
-        return 1;
-    }
-    return 0;
-}
 
 
 int main(int argc, char **argv) {
-    if(try_opencl() != 0)
+    if(PX_setupCL() != 0)
         return 1;
 
-    if(setupCL() != 0)
-        return 1;
-
-    allocate_gpu_buffers();
-    set_gpu_kernel_args();
+    PX_allocate_gpu_buffers(TILES_H, TILES_V);
+    PX_set_gpu_kernel_args(TILES_H, TILES_V);
 
     particle_amount = 100;
     draw_grid = false;
@@ -460,4 +264,6 @@ int main(int argc, char **argv) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
+
+    PX_clearCL();
 }

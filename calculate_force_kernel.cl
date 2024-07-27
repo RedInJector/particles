@@ -36,7 +36,11 @@ __kernel void calculate_force(
     int i = get_global_id(0);
     int j = get_global_id(1);
 
-    printf("%d, %d\n", i, j);
+    if(i >= max_row || j >= max_col)
+        return;
+
+    printf("%d, %d \n", i,j);
+
     return;
     for (int k = 0; k < max_col; k++) {
         for (int n = 0; n < max_row; n++) {
